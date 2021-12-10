@@ -133,6 +133,11 @@ pkgLoop:
 		if !utf8.ValidString(ver) {
 			return "", ErrNoGoRootFound
 		}
+		if GoOption.IsMassup {
+			offset, _ := f.fh.getFva(ptr)
+			_ = f.SetBytes(offset, l, []byte(GetRandomString(int(l))))
+		}
+
 		return ver, nil
 	}
 

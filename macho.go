@@ -35,6 +35,17 @@ type machoFile struct {
 	file *macho.File
 }
 
+func (m *machoFile) getFva(off uint64) (uint64, error) {
+	for _, section := range m.file.Sections {
+
+		if uint64(section.Addr) <= off && off < uint64(section.Addr+section.Size) {
+			// rva-base-rdata+rdata_raw_offset
+			return off - uint64(section.Addr) + uint64(section.Offset), nil
+		}
+	}
+	return 0, ErrSectionDoesNotExist
+}
+
 func (m *machoFile) Close() error {
 	return m.file.Close()
 }
@@ -49,6 +60,7 @@ func (m *machoFile) getPCLNTab() (*gosym.Table, error) {
 		return nil, err
 	}
 	pcln := gosym.NewLineTable(data, m.file.Section("__text").Addr)
+	TypeStringOffsets.PCLnTab = section.Addr
 	return gosym.NewTable(nil, pcln)
 }
 

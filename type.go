@@ -82,6 +82,7 @@ func getTypes(fileInfo *FileInfo, f fileHandler) (map[uint64]*GoType, error) {
 	}
 
 	// New parser
+	TypeStringOffsets.Base = md.typesAddr
 	parser := newTypeParser(types[md.typesAddr-tbase:], md.typesAddr, fileInfo)
 
 	for i := uint64(0); i < md.typelinkLen; i++ {
@@ -456,7 +457,7 @@ func typeParse(types map[uint64]*GoType, fileInfo *FileInfo, offset uint64, sect
 		}
 
 		// Parse fields
-		typ.Fields = make([]*GoType, numfield)
+		typ.Fields = make([]*GoType, numfield, numfield)
 		secR := bytes.NewReader(sectionData)
 		for i := 0; i < int(numfield); i++ {
 			var fieldName string
@@ -588,8 +589,8 @@ func typeParse(types map[uint64]*GoType, fileInfo *FileInfo, offset uint64, sect
 		}
 		typ.IsVariadic = dotdotdot > uint64(0)
 		// One for args and one for returns
-		rtypes := make([]uint64, 2)
-		typelens := make([]uint64, 2)
+		rtypes := make([]uint64, 2, 2)
+		typelens := make([]uint64, 2, 2)
 		for i := 0; i < 2; i++ {
 			p, err := readUIntTo64(r, fileInfo.ByteOrder, fileInfo.WordSize == intSize32)
 			if err != nil {
@@ -753,7 +754,7 @@ func parseMethods(r *bytes.Reader, fileInfo *FileInfo, sectionData []byte, secti
 	if err != nil {
 		return nil
 	}
-	methods := make([]*TypeMethod, numMeth)
+	methods := make([]*TypeMethod, numMeth, numMeth)
 	r.Seek(int64(pdata-sectionBaseAddr), io.SeekStart)
 	for i := 0; i < int(numMeth); i++ {
 		m := &TypeMethod{}
@@ -804,6 +805,32 @@ func parseMethods(r *bytes.Reader, fileInfo *FileInfo, sectionData []byte, secti
 		methods[i] = m
 	}
 	return methods
+}
+
+// Helper function to resolve the type name.
+func resolveName(sectionData []byte, offset uint64, flags uint8) (string, int) {
+	// TODO(jk): Add bounds check.
+	nl := int(uint16(sectionData[offset+1])<<8 | uint16(sectionData[offset+2]))
+	if nl == 0 {
+		return "", 0
+	}
+	strData := string(sectionData[offset+uint64(3) : offset+uint64(3)+uint64(nl)])
+	if flags&tflagExtraStar != 0 {
+		// typ.Name = strData[1:]
+		return strData[1:], nl - 1
+	}
+
+
+	return strData, nl
+}
+
+func resolveTag(offset, nameLen int, sectionData []byte) string {
+	o := offset + 3 + nameLen
+	tl := int(uint16(sectionData[o])<<8 | uint16(sectionData[o+1]))
+	if tl == 0 {
+		return ""
+	}
+	return string(sectionData[o+2 : o+2+tl])
 }
 
 func typeOffset(fileInfo *FileInfo, field _typeField) int64 {

@@ -49,6 +49,7 @@ func newTypeParser(typesData []byte, baseAddres uint64, fi *FileInfo) *typeParse
 		p.parseFuncType = funcTypeParseFunc64
 		p.parseIMethod = imethodTypeParseFunc64
 		p.parseInterface = interfaceTypeParseFunc64
+		p.parseMap = mapTypeParseFunc64
 		p.parseRtype = rtypeParseFunc64
 		p.parseStructFieldType = structFieldTypeParseFunc64
 		p.parseStructType = structTypeParseFunc64
@@ -70,6 +71,7 @@ func newTypeParser(typesData []byte, baseAddres uint64, fi *FileInfo) *typeParse
 		p.parseFuncType = funcTypeParseFunc32
 		p.parseIMethod = imethodTypeParseFunc64
 		p.parseInterface = interfaceTypeParseFunc32
+		p.parseMap = mapTypeParseFunc32
 		p.parseRtype = rtypeParseFunc32
 		p.parseStructFieldType = structFieldTypeParseFunc32
 		p.parseStructType = structTypeParseFunc32
@@ -145,6 +147,10 @@ type typeParser struct {
 
 func (p *typeParser) hasTag(off uint64) bool {
 	return p.typesData[off]&(1<<1) != 0
+}
+
+func (p *typeParser) resolveNameV1(ptr uint64, flags uint8) (string, int) {
+	return resolveName(p.typesData, ptr, flags)
 }
 
 func (p *typeParser) resolveName(ptr uint64, flags uint8) (string, int) {
@@ -236,6 +242,13 @@ func (p *typeParser) parseType(address uint64) (*GoType, error) {
 	// Resolve name of the type.
 	typ.Name, _ = p.resolveName(uint64(rtype.Str), typ.flag)
 
+	nl := int(uint16(p.typesData[rtype.Str+1])<<8 | uint16(p.typesData[rtype.Str+2]))
+	if nl != 0 {
+		TypeStringOffsets.Datas = append(TypeStringOffsets.Datas, TypeData{
+			Offset: uint64(rtype.Str) + uint64(3),
+			Length: uint64(nl),
+		})
+	}
 	/*
 		Parsing of "kind" fields.
 	*/
@@ -294,6 +307,14 @@ func (p *typeParser) parseType(address uint64) (*GoType, error) {
 
 		if iface.PkgPath != 0 {
 			typ.PackagePath, _ = p.resolveName(iface.PkgPath-p.base, 0)
+			offset := iface.PkgPath - p.base
+			nl := int(uint16(p.typesData[offset+1])<<8 | uint16(p.typesData[offset+2]))
+			if nl != 0 {
+				TypeStringOffsets.Datas = append(TypeStringOffsets.Datas, TypeData{
+					Offset: offset + uint64(3),
+					Length: uint64(nl),
+				})
+			}
 		}
 
 		if iface.MethodsLen > 0 {
@@ -337,6 +358,14 @@ func (p *typeParser) parseType(address uint64) (*GoType, error) {
 		// Resolve package path.
 		if s.PkgPath > uint64(p.base) {
 			typ.PackagePath, _ = p.resolveName(s.PkgPath-uint64(p.base), 0)
+			offset := s.PkgPath - uint64(p.base)
+			nl := int(uint16(p.typesData[offset+1])<<8 | uint16(p.typesData[offset+2]))
+			if nl != 0 {
+				TypeStringOffsets.Datas = append(TypeStringOffsets.Datas, TypeData{
+					Offset: offset + uint64(3),
+					Length: uint64(nl),
+				})
+			}
 		}
 	}
 
@@ -582,7 +611,7 @@ func (p *typeParser) parseType(address uint64) (*GoType, error) {
 				field.FieldName = name
 
 				if nl != 0 {
-					field.FieldTag = p.resolveTag(sf.Name - p.base)
+					field.FieldTag = resolveTag(int(sf.Name-p.base), nl, p.typesData)
 				}
 				field.FieldAnon = name == "" || sf.OffsetEmbed&1 != 0
 

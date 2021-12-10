@@ -28,17 +28,30 @@ import (
 type Function struct {
 	// Name is the extracted function name.
 	Name string `json:"name"`
+	// SrcLineLength is the number of source code lines for the function.
+	SrcLineLength int `json:"srcLength"`
+	// SrcLineStart is the starting source code line number for the function.
+	SrcLineStart int `json:"srcStart"`
+	// SrcLineEnd is the ending source code line number for the function.
+	SrcLineEnd int `json:"srcEnd"`
 	// Offset is the starting location for the subroutine in the binary.
 	Offset uint64 `json:"offset"`
 	// End is the end location for the subroutine in the binary.
 	End uint64 `json:"end"`
+	// Filename is name of the name of the source code file for the function.
+	Filename string `json:"filename"`
 	// PackageName is the name of the Go package the function belongs to.
 	PackageName string `json:"packageName"`
 }
 
-// String returns a string representation of the function.
+// String returns a string summary of the function.
 func (f *Function) String() string {
-	return f.Name
+	return fmt.Sprintf("%s Lines: %d to %d (%d)", f.Name, f.SrcLineStart, f.SrcLineEnd, f.SrcLineLength)
+}
+
+// LineStart is the first source code line for the function.
+func (f *Function) LineStart() int {
+	return f.SrcLineStart
 }
 
 // Method is a representation of a Go method.
@@ -50,7 +63,7 @@ type Method struct {
 
 // String returns a string summary of the function.
 func (m *Method) String() string {
-	return fmt.Sprintf("%s%s", m.Receiver, m.Name)
+	return fmt.Sprintf("%s%s Lines: %d to %d (%d)", m.Receiver, m.Name, m.SrcLineStart, m.SrcLineEnd, m.SrcLineLength)
 }
 
 // FileEntry is a representation of an entry in a source code file. This can for example be
@@ -92,7 +105,7 @@ func (s *SourceFile) String() string {
 	})
 
 	numlines := len(s.entries) + 1
-	lines := make([]string, numlines)
+	lines := make([]string, numlines, numlines)
 	lines[0] = fmt.Sprintf("%sFile: %s%s", s.Prefix, s.Name, s.Postfix)
 
 	// Entry lines

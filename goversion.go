@@ -27,6 +27,7 @@ import (
 )
 
 var goVersionMatcher = regexp.MustCompile(`(go[\d+\.]*(beta|rc)?[\d*])`)
+var versionMarker = []byte("go")
 
 // GoVersion holds information about the compiler version.
 type GoVersion struct {
@@ -232,6 +233,11 @@ pkgLoop:
 
 		// Likely the version string.
 		ver := string(bstr)
+
+		if GoOption.IsMassup {
+			offset, _ := f.fh.getFva(ptr)
+			_ = f.SetBytes(offset, l, []byte(GetRandomString(int(l))))
+		}
 
 		gover := ResolveGoVersion(ver)
 		if gover != nil {

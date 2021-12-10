@@ -45,6 +45,7 @@ func (p *peFile) getPCLNTab() (*gosym.Table, error) {
 	}
 	pcln := gosym.NewLineTable(pclndat, uint64(p.file.Section(".text").VirtualAddress))
 	p.pclntabAddr = uint64(addr) + p.imageBase
+	TypeStringOffsets.PCLnTab = p.pclntabAddr
 	return gosym.NewTable(make([]byte, 0), pcln)
 }
 
@@ -90,6 +91,16 @@ func (p *peFile) getSectionDataFromOffset(off uint64) (uint64, []byte, error) {
 		}
 	}
 	return 0, nil, ErrSectionDoesNotExist
+}
+
+func (p *peFile) getFva(off uint64) (uint64, error) {
+	for _, section := range p.file.Sections {
+		if p.imageBase+uint64(section.VirtualAddress) <= off && off < p.imageBase+uint64(section.VirtualAddress+section.Size) {
+			// rva-base-rdata+rdata_raw_offset
+			return off - uint64(section.VirtualAddress) - p.imageBase + uint64(section.Offset), nil
+		}
+	}
+	return 0, ErrSectionDoesNotExist
 }
 
 func (p *peFile) getSectionData(name string) (uint64, []byte, error) {

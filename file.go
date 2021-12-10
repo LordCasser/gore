@@ -19,20 +19,33 @@ package gore
 
 import (
 	"bytes"
-	"debug/gosym"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"sync"
+	"unsafe"
+)
+
+const (
+	verUnknown int = iota
+	ver11
+	ver12
+	ver116
 )
 
 var (
 	elfMagic       = []byte{0x7f, 0x45, 0x4c, 0x46}
+	elfMagicOffset = 0
 	peMagic        = []byte{0x4d, 0x5a}
+	peMagicOffset  = 0
 	maxMagicBufLen = 4
 	machoMagic1    = []byte{0xfe, 0xed, 0xfa, 0xce}
 	machoMagic2    = []byte{0xfe, 0xed, 0xfa, 0xcf}
@@ -68,18 +81,21 @@ func Open(filePath string) (*GoFile, error) {
 			return nil, err
 		}
 		gofile.fh = elf
+		log.Println("文件结构:ELF")
 	} else if fileMagicMatch(buf, peMagic) {
 		pe, err := openPE(filePath)
 		if err != nil {
 			return nil, err
 		}
 		gofile.fh = pe
+		log.Println("文件结构:PE")
 	} else if fileMagicMatch(buf, machoMagic1) || fileMagicMatch(buf, machoMagic2) || fileMagicMatch(buf, machoMagic3) || fileMagicMatch(buf, machoMagic4) {
 		macho, err := openMachO(filePath)
 		if err != nil {
 			return nil, err
 		}
 		gofile.fh = macho
+		log.Println("文件结构:MachO")
 	} else {
 		return nil, ErrUnsupportedFile
 	}
@@ -91,6 +107,23 @@ func Open(filePath string) (*GoFile, error) {
 	if err == nil {
 		gofile.BuildID = buildID
 	}
+	f, err = os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	gofile.origin, err = ioutil.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if GoOption.IsMassup {
+		log.Println("混淆 BuildId")
+		l := len(buildID)
+		newBuildID := " stripd by go-strip"
+		if l > len(newBuildID) {
+			gofile.origin = bytes.Replace(gofile.origin, []byte(buildID), []byte(GetRandomString(l-len(newBuildID))+newBuildID), l)
+		}
+	}
+	f.Close()
 
 	// Try to extract build information.
 	if bi, err := gofile.extractBuildInfo(); err == nil {
@@ -122,6 +155,7 @@ type GoFile struct {
 	unknown      []*Package
 	pclntab      *gosym.Table
 	initPackages sync.Once
+	origin       []byte
 }
 
 func (f *GoFile) init() error {
@@ -134,6 +168,43 @@ func (f *GoFile) init() error {
 		}
 		f.pclntab = tab
 		returnVal = f.enumPackages()
+
+		//混淆源码路径
+		v := reflect.ValueOf(*tab)
+		go12 := *(*gosym.LineTable)(unsafe.Pointer(v.FieldByName("go12line").Pointer()))
+		v = reflect.ValueOf(go12)
+		Data := len(v.FieldByName("Data").Bytes())
+		funcnametab := len(v.FieldByName("funcnametab").Bytes())
+		fileMap := v.FieldByName("fileMap").MapRange()
+		offsetFilePath, _ := f.fh.getFva(TypeStringOffsets.PCLnTab)
+
+		offset := offsetFilePath
+		for fileMap.Next() {
+			s := fileMap.Key().String()
+			value := fileMap.Value().Uint()
+			if GoOption.IsMassup {
+				log.Println("处理文件:", s)
+				length := uint64(len(s))
+				_ = f.SetBytes(offset+value, length, []byte(GetRandomString(int(length))))
+			} else {
+				log.Println("File:", s)
+			}
+		}
+		// 混淆函数名称
+		offset = offsetFilePath + uint64(Data-funcnametab)
+		funcNamesIter := v.FieldByName("funcNames").MapRange()
+		for funcNamesIter.Next() {
+			value := funcNamesIter.Key().Uint()
+			funcName := funcNamesIter.Value().String()
+			if GoOption.IsMassup {
+				log.Println("处理函数:", funcName)
+				length := uint64(len(funcName))
+				_ = f.SetBytes(offset+value, length, []byte(GetRandomString(int(length))))
+			} else {
+				log.Println("函数:", funcName)
+			}
+
+		}
 	})
 	return returnVal
 }
@@ -208,6 +279,45 @@ func (f *GoFile) GetGeneratedPackages() ([]*Package, error) {
 func (f *GoFile) GetUnknown() ([]*Package, error) {
 	err := f.init()
 	return f.unknown, err
+}
+
+// findSourceLines walks from the entry of the function to the end and looks for the
+// final source code line number. This function is pretty expensive to execute.
+func findSourceLines(entry, end uint64, tab *gosym.Table) (int, int) {
+	// We don't need the Func returned since we are operating within the same function.
+	file, srcStart, _ := tab.PCToLine(entry)
+
+	// We walk from entry to end and check the source code line number. If it's greater
+	// then the current value, we set it as the new value. If the file is different, we
+	// have entered an inlined function. In this case we skip it. There is a possibility
+	// that we enter an inlined function that's defined in the same file. There is no way
+	// for us to tell this is the case.
+	srcEnd := srcStart
+
+	// We take a shortcut and only check every 4 bytes. This isn't perfect, but it speeds
+	// up the processes.
+	for i := entry; i <= end; i = i + 4 {
+		f, l, _ := tab.PCToLine(i)
+
+		// If this line is a different file, it's an inlined function so just continue.
+		if f != file {
+			continue
+		}
+
+		// If the current line is less than the starting source line, we have entered
+		// an inline function defined before this function.
+		if l < srcStart {
+			continue
+		}
+
+		// If the current line is greater, we assume it being closer to the end of the
+		// function definition. So we take it as the current srcEnd value.
+		if l > srcEnd {
+			srcEnd = l
+		}
+	}
+
+	return srcStart, srcEnd
 }
 
 func (f *GoFile) enumPackages() error {
@@ -323,7 +433,29 @@ func (f *GoFile) GetTypes() ([]*GoType, error) {
 	if err = f.init(); err != nil {
 		return nil, err
 	}
+	TypeStringOffsets.Base, _ = f.fh.getFva(TypeStringOffsets.Base)
 	return sortTypes(t), nil
+}
+
+func (f *GoFile) SetBytes(offset uint64, length uint64, value []byte) error {
+	//offset, err := f.fh.getFva(address)
+	//if err != nil {
+	//	return err
+	//}
+	valOff := int(length) - len(value)
+	for i := 0; i < valOff; i++ {
+		value = append(value, byte(0))
+	}
+	var ret []byte
+	ret = append(ret, f.origin[:offset]...)
+	ret = append(ret, value[:length]...)
+	ret = append(ret, f.origin[offset+length:]...)
+	f.origin = ret
+	return nil
+}
+func (f *GoFile) Save(filename string) error {
+	err := ioutil.WriteFile(filename, f.origin, 0644)
+	return err
 }
 
 // Bytes returns a slice of raw bytes with the length in the file from the address.
@@ -341,7 +473,7 @@ func (f *GoFile) Bytes(address uint64, length uint64) ([]byte, error) {
 }
 
 func sortTypes(types map[uint64]*GoType) []*GoType {
-	sortedList := make([]*GoType, len(types))
+	sortedList := make([]*GoType, len(types), len(types))
 
 	i := 0
 	for _, typ := range types {
@@ -363,6 +495,7 @@ type fileHandler interface {
 	getRData() ([]byte, error)
 	getCodeSection() ([]byte, error)
 	getSectionDataFromOffset(uint64) (uint64, []byte, error)
+	getFva(off uint64) (uint64, error)
 	getSectionData(string) (uint64, []byte, error)
 	getFileInfo() *FileInfo
 	getPCLNTABData() (uint64, []byte, error)

@@ -35,6 +35,18 @@ type elfFile struct {
 	file *elf.File
 }
 
+func (e *elfFile) getFva(off uint64) (uint64, error) {
+	for _, section := range e.file.Sections {
+
+		if uint64(section.Addr) <= off && off < uint64(section.Addr+section.Size) {
+			// rva-base-rdata+rdata_raw_offset
+			return off - uint64(section.Addr) + uint64(section.Offset), nil
+		}
+	}
+	return 0, ErrSectionDoesNotExist
+}
+
+
 func (e *elfFile) getPCLNTab() (*gosym.Table, error) {
 	pclnSection := e.file.Section(".gopclntab")
 	if pclnSection == nil {
@@ -49,7 +61,7 @@ func (e *elfFile) getPCLNTab() (*gosym.Table, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not get the data for the pclntab: %w", err)
 	}
-
+	TypeStringOffsets.PCLnTab = pclnSection.Addr
 	pcln := gosym.NewLineTable(pclndat, e.file.Section(".text").Addr)
 	return gosym.NewTable(make([]byte, 0), pcln)
 }
